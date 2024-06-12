@@ -1,2 +1,14 @@
-# home API
 GET http://localhost:3000/
+
+POST http://localhost:3000/getTimeSlots
+Content-Type: application/json
+
+{
+	"start_day_identifier" : "20210910",
+	"days": 2,
+	"service_duration": 3600,
+	"timeslot_interval": 3600,
+	"is_ignore_schedule": false,
+	"is_ignore_workhour": false,
+	"timezone_identifier": "America/New_York"
+}

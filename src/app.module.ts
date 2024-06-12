@@ -3,6 +3,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import * as dotenv from 'dotenv';
+import { Workhour } from './entities/Workhour.entity';
 
 dotenv.config();
 
@@ -19,6 +20,7 @@ dotenv.config();
       synchronize: true,
       logging: true,
     }),
+    TypeOrmModule.forFeature([Workhour]),
   ],
   controllers: [AppController],
   providers: [AppService],
