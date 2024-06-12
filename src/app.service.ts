@@ -1,10 +1,11 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { WEEKDAY, Workhour } from './entities/Workhour.entity';
-import { Repository } from 'typeorm';
-import { GetTimeslotResponseDto } from './dto/get-timeslot.response.dto';
-import { GetTimeslotRequestDto } from './dto/get-timeslot.request.dto';
+import { LessThan, MoreThanOrEqual, Repository } from 'typeorm';
 import * as dayjs from 'dayjs';
+import { Event } from './entities/Event.entity';
+import { WEEKDAY, Workhour } from './entities/Workhour.entity';
+import { GetTimeslotRequestDto } from './dto/get-timeslot.request.dto';
+import { GetTimeslotResponseDto } from './dto/get-timeslot.response.dto';
 
 const DAY_SECONDS = 60 * 60 * 24;
 
@@ -13,7 +14,18 @@ export class AppService {
   constructor(
     @InjectRepository(Workhour)
     private workhourRepository: Repository<Workhour>,
+    @InjectRepository(Event)
+    private eventRepository: Repository<Event>,
   ) {}
+
+  async getEventByTime(openTimestamp: number, closeTimestamp: number) {
+    return this.eventRepository.find({
+      where: {
+        beginAt: MoreThanOrEqual(openTimestamp),
+        endAt: LessThan(closeTimestamp),
+      },
+    });
+  }
 
   async getWorkhours(): Promise<Workhour[]> {
     return this.workhourRepository.find();
@@ -34,8 +46,8 @@ export class AppService {
   async getTimeSlots(
     timeslotDto: GetTimeslotRequestDto,
   ): Promise<GetTimeslotResponseDto[]> {
-    const daysArr = new Array(timeslotDto?.days || 1).fill(null);
-    const daysTimestampAndWeekday = daysArr.map((_, i) => {
+    const daysEmptyArr = new Array(Math.max(timeslotDto.days, 1)).fill(null);
+    const daysTimestampAndWeekday = daysEmptyArr.map((_, i) => {
       const date = this.createDateFromTimezone(
         String(Number(timeslotDto.start_day_identifier) + i),
         timeslotDto.timezone_identifier,
@@ -53,38 +65,67 @@ export class AppService {
         workhour,
       ]),
     );
-    const startDate = this.createDateFromTimezone(
+
+    const startDateTimestamp = this.createDateFromTimezone(
       timeslotDto.start_day_identifier,
       timeslotDto.timezone_identifier,
-    );
+    ).unix();
+
+    const events = (
+      await Promise.all(
+        daysTimestampAndWeekday
+          .map((v) => v.dayTimestamp)
+          .map((dt) => this.getEventByTime(dt, dt + DAY_SECONDS)),
+      )
+    ).flat();
 
     return daysTimestampAndWeekday.map(({ dayTimestamp, weekday }) => {
       const workhour = workhoursMap.get(weekday);
-      const { isDayOff, openInterval, closeInterval } = workhour;
       const defaultObj = {
         start_of_day: dayTimestamp,
         day_modifier: Math.floor(
-          (dayTimestamp - startDate.unix()) / DAY_SECONDS,
+          (dayTimestamp - startDateTimestamp) / DAY_SECONDS,
         ),
         is_day_off: workhoursMap.get(weekday).isDayOff,
       };
 
-      if (isDayOff) {
+      if (workhour.isDayOff && !timeslotDto.is_ignore_workhour) {
         return {
           ...defaultObj,
           timeslots: [],
         };
       }
 
-      const openTimestamp = openInterval + dayTimestamp;
-      const closeTimestamp = closeInterval + dayTimestamp;
+      const openTimestamp = workhour.openInterval + dayTimestamp;
+      const closeTimestamp = workhour.closeInterval + dayTimestamp;
       const timeslotInterval = timeslotDto.timeslot_interval;
 
       let timeslots = [];
-      let time = openTimestamp;
-      while (time + timeslotInterval < closeTimestamp) {
-        timeslots.push({ begin_at: time, end_at: time + timeslotInterval });
-        time += timeslotInterval;
+      let tempStartTime = timeslotDto.is_ignore_workhour
+        ? dayTimestamp
+        : openTimestamp;
+      const tempEndTime = timeslotDto.is_ignore_workhour
+        ? dayTimestamp + DAY_SECONDS
+        : closeTimestamp;
+
+      while (tempStartTime + timeslotInterval <= tempEndTime) {
+        const event = events.find(
+          (e) =>
+            e.beginAt >= tempStartTime &&
+            e.endAt <= tempStartTime + timeslotDto.service_duration,
+        );
+
+        if (!timeslotDto.is_ignore_schedule && event) {
+          tempStartTime += timeslotInterval;
+          continue;
+        }
+
+        timeslots.push({
+          begin_at: tempStartTime,
+          end_at: tempStartTime + timeslotInterval,
+        });
+
+        tempStartTime += timeslotInterval;
       }
 
       return { ...defaultObj, timeslots };
